@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/bakusoku-memd-lib/third-party/googletest" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/bakusoku-memd-lib/third-party/xtensor" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/bakusoku-memd-lib/third-party/xtensor-blas" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/bakusoku-memd-lib/third-party/xtl" vcs="Git" />
+  </component>
+</project>

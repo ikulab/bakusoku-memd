@@ -1,0 +1,7 @@
+services:
+  bakusoku-memd:
+    build:
+      context: .
+      dockerfile: ./bakusoku-memd-cpp/Dockerfile
+    container_name: bakusoku-memd
+
