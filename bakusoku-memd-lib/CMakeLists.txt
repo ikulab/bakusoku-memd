@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 project(bakusoku-memd-lib)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 if ((NOT UNIX) AND (NOT APPLE))
     message(WARNING "このシステム:${CMAKE_SYSTEM_NAME} ではテストしてないので何が起こるかわからない!")
@@ -23,14 +25,16 @@ include(local-properties-default.cmake)
 include(local-properties.cmake OPTIONAL)
 set_local_properties()
 
-if (Unix)
+if (UNIX)
     set(THREADS_PREFER_PTHREAD_FLAG ON)
     find_package(Threads REQUIRED)
-    target_link_libraries(bakusoku-memd-lib "-pthread")
+    target_link_libraries(bakusoku-memd-lib INTERFACE Threads::Threads)
 endif ()
 
 find_package(OpenBLAS REQUIRED)
-target_link_libraries(bakusoku-memd-lib INTERFACE ${OpenBLAS_LIBRARIES})
+find_package(MPI REQUIRED)
+target_link_libraries(bakusoku-memd-lib INTERFACE ${OpenBLAS_LIBRARIES} ${MPI_LIBRARIES})
+target_include_directories(bakusoku-memd-lib INTERFACE ${MPI_INCLUDE_PATH})
 
 
 enable_testing()

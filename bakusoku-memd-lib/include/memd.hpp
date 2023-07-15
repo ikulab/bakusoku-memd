@@ -4,6 +4,8 @@
 #include <numbers>
 #include <fstream>
 #include <optional>
+#include <future>
+#include <thread>
 #include <xtensor/xarray.hpp>
 #include <xtensor/xadapt.hpp>
 #include <xtensor/xcsv.hpp>
@@ -14,10 +16,10 @@
 #include <xtensor/xmath.hpp>
 #include <xtensor/xsort.hpp>
 #include <xtensor-blas/xlinalg.hpp>
+#include <mpi.h>
 #include "./define.hpp"
 #include "./Spline.hpp"
 
-//namespace {
 
 namespace yukilib {
 
@@ -28,8 +30,26 @@ namespace yukilib {
     namespace internal {
 
         namespace np = xt;
-//using namespace ::yukilib;
         using namespace xt::placeholders;  // to enable _ syntax
+
+        int get_mpi_rank() {
+            int mpi_rank;
+            MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+            assert(0 <= mpi_rank);
+            return mpi_rank;
+        }
+
+        int get_mpi_size() {
+            int mpi_size;
+            MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+            assert(0 < mpi_size);
+            return mpi_size;
+        }
+
+        template<typename T>
+        constexpr T ceil(T x, T y) {
+            return (x + y - 1) / y;
+        }
 
         xt::xarray<fp_t>
         CubicSpline(const xt::xarray<ptrdiff_t> &x, const xt::xarray<fp_t> &y, const xt::xarray<size_t> &t) {
@@ -38,23 +58,10 @@ namespace yukilib {
             for (size_t i = 0; i < ret.shape(1); ++i) {
                 assert(3 <= x.shape(0));
                 auto y_vec = xt::view(y, xt::all(), i);
-//        tk::spline spline(x_vec, std::vector(y_vec.begin(), y_vec.end()));
                 tk::spline spline(x_vec, std::vector(y_vec.begin(), y_vec.end()), tk::spline::cspline, false,
                                   tk::spline::not_a_knot,
                                   -99.0, tk::spline::not_a_knot, -99.0);
 
-//        auto spline = x.shape(0) < 4 ?
-//                      //                      tk::spline(x_vec, std::vector(y_vec.begin(), y_vec.end())) :
-//                      tk::spline(x_vec, std::vector(y_vec.begin(), y_vec.end()), tk::spline::cspline, false,
-//                                 tk::spline::first_deriv,
-//                                 0.0, tk::spline::first_deriv, 0.0) :
-//                      tk::spline(x_vec, std::vector(y_vec.begin(), y_vec.end()), tk::spline::cspline, false,
-//                                 tk::spline::not_a_knot,
-//                                 -99.0, tk::spline::not_a_knot, -99.0);
-
-//        for (const auto &v: t) {
-//            ret(static_cast<size_t>(v), i) = spline(static_cast<fp_t>(v));
-//        }
                 for (size_t j = 0; j < t.shape(0); ++j) {
                     ret(j, i) = spline(static_cast<fp_t>(t(j)));
                 }
@@ -64,29 +71,18 @@ namespace yukilib {
 
         template<typename T>
         xt::xarray<T> make_empty() {
-//    return xt::empty<T>(typename xt::xarray<T>::shape_type(0));
             return xt::xarray<T>(std::vector<size_t>{0});
         }
 
         /// ひとつのimfをファイル出力する　入力、出力共に 行=step, 列=channel を想定
         void write_imf(const xt::xarray<fp_t> &imf, unsigned imf_index, std::string_view prefix) {
-//    const auto dat_channels = imf.shape(1);
-//    const auto dat_steps = imf.shape(2);
             if (imf.shape(0) < imf.shape(1)) {
                 std::cerr << "yukilib::internal::write_imf の入力imfが step < channel になってるぞ！ \n\t"
                           << "shape:(" << imf.shape(0) << ',' << imf.shape(1) << ')' << std::endl;
             }
             std::ostringstream sout{};
-
             sout << prefix << std::setfill('0') << std::setw(3) << imf_index << ".csv";
             std::ofstream ofs(sout.str());
-//    for (size_t epoch = 0; epoch < dat_steps; ++epoch) {
-//        for (size_t ch = 0; ch < dat_channels; ++ch) {
-//            ofs << std::scientific << std::setprecision(18) << imf(i, ch, epoch);
-//            if (ch != dat_channels - 1) { ofs << ','; }
-//        }
-//        if (epoch != dat_steps - 1) { ofs << '\n'; }
-//    }
             ofs << std::scientific << std::setprecision(18);
             xt::dump_csv(ofs, imf);
         }
@@ -100,20 +96,13 @@ namespace yukilib {
                 xt::xarray<unsigned> seed = xt::arange<unsigned>(1u, n + 1);
                 auto base_inv = 1.0 / base;
                 while (std::any_of(seed.begin(), seed.end(), [](const auto &x) { return x != 0; })) {
-//            auto digit = np::remainder(xt::view(seed, xt::range(0, n)), static_cast<unsigned>(base));
-                    // 変更点
-//            xt::xarray<unsigned> digit = xt::fmod(xt::view(seed, xt::range(0, n)), static_cast<unsigned>(base));
                     xt::xarray<unsigned> digit = xt::view(seed, xt::range(0, n)) % static_cast<unsigned>(base);
                     seq = seq + digit * base_inv;
                     base_inv = base_inv / base;
-//            seed = np::floor(seed / base);
-                    // 変更点
                     seed /= static_cast<unsigned>(base);
                 }
             } else {
                 auto temp = np::arange(1u, n + 1);
-//        seq = (np::remainder(temp, (-base + 1)) + 0.5) / (-base);
-                // 変更点
                 seq = (temp % (-base + 1) + 0.5) / (-base);
             }
             return seq;
@@ -161,14 +150,10 @@ namespace yukilib {
             size_t lx = x.shape(0) - 1;
             size_t end_max = indmax.shape(0) - 1; // マイナスの値になるときは早期returnするから問題ないはず()
             size_t end_min = indmin.shape(0) - 1;
-//    indmin = indmin.astype(int)
-//    indmax = indmax.astype(int)
 
-            //bool mode;
             if (indmin.shape(0) + indmax.shape(0) < 3) {
                 return {std::nullopt, false};
             } else {
-                //mode = 1; //#the projected signal has inadequate extrema
                 assert(0 <= indmax.shape(0) && 0 <= indmin.shape(0) && 1 < nbsym && "size_tのend_maxがマイナスかもしれない");
             }
 
@@ -211,7 +196,6 @@ namespace yukilib {
                             xt::view(indmax,
                                      xt::range(std::max<ptrdiff_t>(static_cast<ptrdiff_t>(end_max - nbsym + 1), 0), _)),
                             0);
-                    auto _dbg = rmax.shape(0);
                     rmin = np::flip(
                             xt::view(indmin,
                                      xt::range(std::max<ptrdiff_t>(static_cast<ptrdiff_t>(end_min - nbsym), 0), -1)),
@@ -223,7 +207,6 @@ namespace yukilib {
                             xt::view(indmax,
                                      xt::range(std::max<ptrdiff_t>(static_cast<ptrdiff_t>(2 + end_max - nbsym), 0), _)),
                             0)));
-                    auto _dbg = rmax.shape(0);
                     rmin = np::flip(
                             xt::view(indmin,
                                      xt::range(std::max<ptrdiff_t>(static_cast<ptrdiff_t>(end_min - nbsym + 1), 0), _)),
@@ -256,11 +239,6 @@ namespace yukilib {
                 }
             }
 
-//    np::xarray<ptrdiff_t> tlmin = static_cast<ptrdiff_t>((2 * t[lsym])) - static_cast<ptrdiff_t>(t[lmin]);
-//    np::xarray<ptrdiff_t> tlmax = static_cast<ptrdiff_t>(2 * t[lsym]) - static_cast<ptrdiff_t>(t[lmax]);
-//    np::xarray<ptrdiff_t> trmin = static_cast<ptrdiff_t>(2 * t[rsym]) - static_cast<ptrdiff_t>(t[rmin]);
-//    np::xarray<ptrdiff_t> trmax = static_cast<ptrdiff_t>(2 * t[rsym]) - static_cast<ptrdiff_t>(t[rmax]);
-            // 変更点
             np::xarray<ptrdiff_t> t_signed = xt::cast<ptrdiff_t>(t);
             np::xarray<ptrdiff_t> tlmin = (2 * t_signed[lsym]) - xt::index_view(t_signed, lmin);
             np::xarray<ptrdiff_t> tlmax = (2 * t_signed[lsym]) - xt::index_view(t_signed, lmax);
@@ -278,9 +256,6 @@ namespace yukilib {
                     throw (std::logic_error("bug"));
                 }
                 lsym = 0;
-//        tlmin = static_cast<ptrdiff_t>(2 * t[lsym]) - static_cast<ptrdiff_t>(t[lmin]);
-//        tlmax = static_cast<ptrdiff_t>(2 * t[lsym]) - static_cast<ptrdiff_t>(t[lmax]);
-                // 変更点
                 tlmin = (2 * t_signed[lsym]) - xt::index_view(t_signed, lmin);
                 tlmax = (2 * t_signed[lsym]) - xt::index_view(t_signed, lmax);
             }
@@ -295,29 +270,15 @@ namespace yukilib {
                     throw (std::logic_error("bug"));
                 }
                 rsym = lx;
-//        trmin = static_cast<ptrdiff_t>(2 * t[rsym]) - static_cast<ptrdiff_t>(t[rmin]);
-//        trmax = static_cast<ptrdiff_t>(2 * t[rsym]) - static_cast<ptrdiff_t>(t[rmax]);
-                // 変更点
                 trmin = (2 * t_signed[rsym]) - xt::index_view(t_signed, rmin);
                 trmax = (2 * t_signed[rsym]) - xt::index_view(t_signed, rmax);
             }
 
-//    np::xarray<fp_t> zlmax = xt::view(z, xt::range(lmax, _));
-//    np::xarray<fp_t> zlmin = xt::view(z, xt::range(lmin, _));
-//    np::xarray<fp_t> zrmax = xt::view(z, xt::range(rmax, _));
-//    np::xarray<fp_t> zrmin = xt::view(z, xt::range(rmin, _));
-            // 変更点
             np::xarray<fp_t> zlmax = boundary_conditions_helper0(z, lmax);
             np::xarray<fp_t> zlmin = boundary_conditions_helper0(z, lmin);
             np::xarray<fp_t> zrmax = boundary_conditions_helper0(z, rmax);
             np::xarray<fp_t> zrmin = boundary_conditions_helper0(z, rmin);
 
-//    np::xarray<ptrdiff_t> tmin = np::hstack(xt::xtuple(tlmin, np::xarray<ptrdiff_t>({t_signed[indmin]}), trmin));
-//    np::xarray<ptrdiff_t> tmax = np::hstack(xt::xtuple(tlmax, np::xarray<ptrdiff_t>({t_signed[indmax]}), trmax));
-//    np::xarray<fp_t> zmin = np::vstack(xt::xtuple(zlmin, xt::view(z, xt::range(indmin, _)), zrmin));
-//    np::xarray<fp_t> zmax = np::vstack(xt::xtuple(zlmax, xt::view(z, xt::range(indmax, _)), zrmax));
-
-            // 変更点
             np::xarray<ptrdiff_t> tmin = np::hstack(
                     xt::xtuple(tlmin, np::xarray<ptrdiff_t>({xt::index_view(t_signed, indmin)}), trmin));
             np::xarray<ptrdiff_t> tmax = np::hstack(
@@ -329,21 +290,32 @@ namespace yukilib {
         }
 
 
-// computes the mean of the envelopes and the mode amplitude estimate
+        // computes the mean of the envelopes and the mode amplitude estimate
         std::tuple<np::xarray<fp_t>, np::xarray<fp_t>, np::xarray<fp_t>, np::xarray<fp_t>>
-        envelope_mean(const np::xarray<fp_t> &m, const np::xarray<size_t> &t, const np::xarray<fp_t> &seq, size_t ndir,
+        envelope_mean(const np::xarray<fp_t> &m, const np::xarray<size_t> &t, const np::xarray<fp_t> &seq,
+                      const size_t ndir,
                       size_t N, size_t N_dim) {
+
+            const auto mpi_size = static_cast<size_t>(get_mpi_size());
+            const auto mpi_rank = static_cast<size_t>(get_mpi_rank());
+            const auto mpi_window = ceil(ndir, mpi_size);
 
             constexpr size_t NBSYM = 2;
             size_t count = 0;
 
             np::xarray<fp_t> env_mean = np::zeros<fp_t>({t.shape(0), N_dim});
             np::xarray<fp_t> amp = np::zeros<fp_t>({t.shape(0)});
-            np::xarray<fp_t> nem = np::zeros<fp_t>({ndir});
-            np::xarray<fp_t> nzm = np::zeros<fp_t>({ndir});
+
+            std::vector<fp_t> nem(mpi_window * mpi_size);
+            std::vector<fp_t> nzm(mpi_window * mpi_size);
+
 
             np::xarray<fp_t> dir_vec = np::zeros<fp_t>({N_dim, static_cast<size_t>(1)});
-            for (size_t it = 0; it < ndir; ++it) {
+            for (unsigned i = 0; i < mpi_window; ++i) {
+                const size_t it = mpi_window * mpi_rank + i;
+                if (ndir <= it) {
+                    break;
+                }
                 if (N_dim != 3) {     // Multivariate signal (for N_dim ~=3) with hammersley sequence
                     // # Linear normalisation of hammersley sequence in the range of -1.00 - 1.00
                     np::xarray<fp_t> b = 2.0 * xt::view(seq, it, xt::all()) - 1.0;
@@ -372,10 +344,6 @@ namespace yukilib {
                     fp_t phirad = seq(it, 1) * 2.0 * numbers::pi_v<fp_t>;
                     fp_t st = std::sqrt(1.0 - tt * tt);
 
-//            dir_vec[0] = st * std::cos(phirad);
-//            dir_vec[1] = st * std::sin(phirad);
-//            dir_vec[2] = tt;
-                    //変更点
                     xt::view(dir_vec, 0, 0) = st * std::cos(phirad);
                     xt::view(dir_vec, 1, 0) = st * std::sin(phirad);
                     xt::view(dir_vec, 2, 0) = tt;
@@ -391,7 +359,6 @@ namespace yukilib {
                 np::xarray<size_t> indzer = zero_crossings(y);
                 nzm[it] = static_cast<fp_t>(indzer.shape(0));
 
-//        tmin, tmax, zmin, zmax, mode = boundary_conditions(indmin, indmax, t, y, m, NBSYM); // 原本はこっちだよ
                 const auto [may_null_results, mode] = boundary_conditions(indmin, indmax, t, y, m, NBSYM);
 
                 // # Calculate multidimensional envelopes using spline interpolation
@@ -399,14 +366,8 @@ namespace yukilib {
                 if (mode) {
                     assert(may_null_results.has_value() && "mode == true ");
                     const auto [tmin, tmax, zmin, zmax] = *may_null_results;
-//            fmin = CubicSpline(tmin, zmin, bc_type = 'not-a-knot')
-//            env_min = fmin(t)
                     const auto env_min = CubicSpline(tmin, zmin, t);
-//            fmax = CubicSpline(tmax, zmax, bc_type = 'not-a-knot')
-//            env_max = fmax(t)
-
                     const auto env_max = CubicSpline(tmax, zmax, t);
-//            amp = amp + np.sqrt(np.sum(np.power(env_max - env_min, 2), axis = 1)) / 2
                     amp = amp + np::sqrt(np::sum(np::square(env_max - env_min), 1)) / 2;
 
                     env_mean = env_mean + (env_max + env_min) / 2;
@@ -415,19 +376,54 @@ namespace yukilib {
                 }
             }
 
+
+            assert(sizeof(fp_t) == sizeof(double));
+            std::vector<fp_t> env_mean_tmp(env_mean.size() * mpi_size);  // mpi_rank == 0 ? env_mean.size() * mpi_size
+            std::vector<fp_t> amp_tmp(t.shape(0) * mpi_size);  // mpi_rank == 0 ? t.shape(0) * mpi_size
+            MPI_Gather(env_mean.data(), static_cast<int>(env_mean.size()), MPI_DOUBLE, env_mean_tmp.data(),
+                       static_cast<int>(env_mean.size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            MPI_Gather(amp.data(), static_cast<int>(amp.size()), MPI_DOUBLE, amp_tmp.data(),
+                       static_cast<int>(amp.size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            MPI_Gather(nem.data() + (mpi_window * mpi_rank), static_cast<int>(mpi_window), MPI_DOUBLE, nem.data(),
+                       static_cast<int>(mpi_window), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            MPI_Gather(nzm.data() + (mpi_window * mpi_rank), static_cast<int>(mpi_window), MPI_DOUBLE, nzm.data(),
+                       static_cast<int>(mpi_window), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+            if (mpi_rank == 0) {
+                for (unsigned i = 1; i < mpi_size; ++i) {
+                    std::transform(env_mean.begin(), env_mean.end(),
+                                   env_mean_tmp.begin() + (static_cast<ptrdiff_t>(env_mean.size() * i)),
+                                   env_mean.begin(),
+                                   std::plus<>());
+                    std::transform(amp.begin(), amp.end(), amp_tmp.begin() + (static_cast<ptrdiff_t>(amp.size() * i)),
+                                   amp.begin(),
+                                   std::plus<>());
+                }
+            }
+
+            MPI_Allreduce(&count, &count, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);  //countを合算して同期
+            MPI_Bcast(env_mean.data(), static_cast<int>(env_mean.size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            MPI_Bcast(amp.data(), static_cast<int>(amp.size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            MPI_Bcast(nem.data(), static_cast<int>(nem.size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            MPI_Bcast(nzm.data(), static_cast<int>(nzm.size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            nem.resize(ndir);
+            nzm.resize(ndir);
+            np::xarray<fp_t> nem_ret = xt::adapt(nem);
+            np::xarray<fp_t> nzm_ret = xt::adapt(nzm);
+
             if (ndir > count) {
                 env_mean = env_mean / (ndir - count);
                 amp = amp / (ndir - count);
             } else {
                 env_mean = np::zeros<fp_t>({N, N_dim});
                 amp = np::zeros<fp_t>({N});
-                nem = np::zeros<fp_t>({ndir});
+                nem_ret = np::zeros<fp_t>({ndir});
             }
 
-            return {env_mean, nem, nzm, amp};
+            return {env_mean, nem_ret, nzm_ret, amp};
         }
 
-// #Stopping criterion
+        // #Stopping criterion
         std::pair<bool, np::xarray<fp_t>>
         stop(const np::xarray<fp_t> &m, const np::xarray<size_t> &t, fp_t sd, fp_t sd2, fp_t tol,
              const np::xarray<fp_t> &seq,
@@ -487,12 +483,9 @@ namespace yukilib {
             np::xarray<size_t> locs_max =
                     xt::adapt(np::where(xt::view(dX, xt::range(_, -1)) > 0 && xt::view(dX, xt::range(1, _)) < 0)[0]) +
                     1;
-//    np::xarray<fp_t> pks_max = xt::index_view(X, locs_max);
-            // 変更点
             np::xarray<fp_t> X_copied = X;
             np::xarray<fp_t> pks_max = xt::index_view(X_copied.reshape({X_copied.shape(0)}), locs_max);
             pks_max = pks_max.reshape({pks_max.shape(0), 1});
-            // 変更点ここまで
             return {pks_max, locs_max};
         }
 
@@ -504,19 +497,16 @@ namespace yukilib {
 
             size_t m = x.shape(0) - 1;
 
-//# Calculates the extrema of the projected signal
-//# Difference between subsequent elements:
+            //# Calculates the extrema of the projected signal
+            //# Difference between subsequent elements:
             np::xarray<fp_t> dy = xt::transpose(np::diff(xt::transpose(x)));
             xt::xarray<size_t> a = xt::adapt(np::where(xt::not_equal(dy, 0.0))[0]);
             xt::xarray<size_t> lm = xt::adapt(np::where(xt::not_equal(np::diff(a), 1))[0]);
             lm += 1;
             np::xarray<size_t> d = xt::index_view(a, lm) - xt::index_view(a, lm - 1);
             xt::index_view(a, lm) = xt::index_view(a, lm) - np::floor(d / 2);
-//    a = np.insert(a, a.shape(0), m)
             a = np::concatenate(xt::xtuple(a, np::xarray<size_t>({m})), 0);
 
-//    xt::xarray<fp_t> ya = xt::index_view(x, a);
-            // 変更点
             xt::xarray<fp_t> ya;
             if (x.shape(0) == 1) {
                 ya = xt::index_view(x, a);
@@ -524,34 +514,23 @@ namespace yukilib {
                 ya = xt::index_view(x.reshape({x.shape(0)}), a);
                 ya = ya.reshape({ya.shape(0), 1});
             }
-            // 変更点ここまで
 
             np::xarray<size_t> indmin, indmax;
             if (ya.shape(0) > 1) {
-//# Maxima
-                const auto [pks_max, loc_max] = peaks(ya);
-//# Minima
-                const auto [pks_min, loc_min] = peaks(-ya);
+                const auto [pks_max, loc_max] = peaks(ya);  //# Maxima
+                const auto [pks_min, loc_min] = peaks(-ya);  //# Minima
 
                 if (pks_min.shape(0) > 0) {
-//            indmin = a[loc_min];
-                    // 変更点
                     indmin = xt::index_view(a, loc_min);
                 } else {
-//            indmin = np.asarray([]);
                     indmin = make_empty<size_t>();
                 }
                 if (pks_max.shape(0) > 0) {
-//            indmax = a[loc_max];
-                    // 変更点
                     indmax = xt::index_view(a, loc_max);
                 } else {
-//            indmax = np.asarray([])
                     indmax = make_empty<size_t>();
                 }
             } else {
-//        indmin = np.array([])
-//        indmax = np.array([])
                 indmin = make_empty<size_t>();
                 indmax = make_empty<size_t>();
             }
@@ -564,29 +543,29 @@ namespace yukilib {
 
             for (size_t it = 0; it < ndir; ++it) {
                 if (N_dim != 3) {  //# Multivariate signal( for N_dim ~ = 3) with hammersley sequence
-//# Linear normalisation of hammersley sequence in the range of -1.00 - 1.00
+                    //# Linear normalisation of hammersley sequence in the range of -1.00 - 1.00
                     np::xarray<fp_t> b = 2 * xt::view(seq, it, xt::all()) - 1;
 
-//# Find angles corresponding to the normalised sequence
+                    //# Find angles corresponding to the normalised sequence
                     xt::xarray<fp_t> tht = xt::transpose(
                             xt::atan2(np::sqrt(xt::flip(np::cumsum(xt::square(xt::view(b, xt::range(_, 0, -1)))), 0)),
                                       xt::view(b, xt::range(_, N_dim - 1))));
 
-//# Find coordinates of unit direction vectors on n-sphere
+                    //# Find coordinates of unit direction vectors on n-sphere
                     xt::view(dir_vec, xt::all(), 0) = np::cumprod(
                             np::concatenate(xt::xtuple(np::xarray<fp_t>({1.0}), np::sin(tht))));
                     xt::view(dir_vec, xt::range(_, N_dim - 1), 0) =
                             np::cos(tht) * xt::view(dir_vec, xt::range(_, N_dim - 1), 0);
 
                 } else {  //# Trivariate signal with hammersley sequence
-//# Linear normalisation of hammersley sequence in the range of -1.0 - 1.0
+                    //# Linear normalisation of hammersley sequence in the range of -1.0 - 1.0
                     fp_t tt = 2 * seq(it, 0) - 1;
                     if (tt > 1) {
                         tt = 1;
                     } else if (tt < -1) {
                         tt = -1;
                     }
-//# Normalize angle from 0 - 2*pi
+                    //# Normalize angle from 0 - 2*pi
                     fp_t phirad = seq(it, 1) * 2 * numbers::pi_v<fp_t>;
                     fp_t st = std::sqrt(1.0 - tt * tt);
 
@@ -594,17 +573,16 @@ namespace yukilib {
                     xt::view(dir_vec, 1, xt::all()) = st * sin(phirad);
                     xt::view(dir_vec, 2, xt::all()) = tt;
                 }
-//# Projection of input signal on nth (out of total ndir) direction
-//# vectors
+                //# Projection of input signal on nth (out of total ndir) direction vectors
                 xt::xarray<fp_t> y = xt::linalg::dot(r, dir_vec);
 
-//# Calculates the extrema of the projected signal
+                //# Calculates the extrema of the projected signal
                 const auto [indmin, indmax] = local_peaks(y);
 
                 xt::view(ner, it) = indmin.shape(0) + indmax.shape(0);
             }
 
-//# Stops if the all projected signals have less than 3 extrema
+            //# Stops if the all projected signals have less than 3 extrema
             bool stp = xt::all(ner < 3);
 
             return stp;
@@ -616,7 +594,6 @@ namespace yukilib {
             } else {
                 for (unsigned number = 3; number < x; ++number) {
                     if (x % number == 0 or x % 2 == 0) {
-//# print number
                         return false;
                     }
                 }
@@ -641,8 +618,6 @@ namespace yukilib {
         set_value(const np::xarray<fp_t> &arg, std::optional<unsigned> n1, std::optional<EStopCriteria> n2,
                   std::optional<std::tuple<fp_t, fp_t, fp_t>> n3) {
 
-//    args = args[0]
-//    narg = len(args)
             np::xarray<fp_t> q = arg;
             unsigned narg = 1;
             if (n1.has_value()) {
@@ -654,7 +629,6 @@ namespace yukilib {
             if (n3.has_value()) {
                 ++narg;
             }
-//    arg = args[0]
 
             unsigned ndir{}, MAXITERATIONS{};
             std::optional<size_t> stp_cnt{};
@@ -714,7 +688,7 @@ namespace yukilib {
 //        }
             }
 
-//# Rescale input signal if required
+            //# Rescale input signal if required
             if (q.shape(0) == 0) {  //# Doesn't do the same as the Matlab script
                 throw std::runtime_error("emptyDataSet. Data set cannot be empty.");
             }
@@ -722,16 +696,16 @@ namespace yukilib {
                 q = np::xarray<fp_t>(xt::transpose(arg));
             }
 
-//# Dimension of input signal
+            //# Dimension of input signal
             auto N_dim = static_cast<unsigned>(q.shape(1));
             if (N_dim < 3) {
                 throw std::runtime_error("Function only processes the signal having more than 3.");
             }
 
-//# Length of input signal
+            //# Length of input signal
             size_t N = q.shape(0);
 
-//# Check validity of Input parameters                                       #  Doesn't do the same as the Matlab script
+            //# Check validity of Input parameters                    #  Doesn't do the same as the Matlab script
             if (ndir < 6) {
                 throw std::runtime_error("invalid num_dir. num_dir should be an integer greater than or equal to 6.");
             }
@@ -748,11 +722,11 @@ namespace yukilib {
 //        }
 //    }
 
-//# Initializations for Hammersley function
+            //# Initializations for Hammersley function
             base.push_back(static_cast<int>(-ndir));
 
             np::xarray<fp_t> seq;
-//# Find the pointset for the given input signal
+            //# Find the pointset for the given input signal
             if (N_dim == 3) {
                 base.push_back(2);
                 seq = np::zeros<fp_t>({ndir, N_dim - 1});
@@ -766,15 +740,13 @@ namespace yukilib {
                     }
                 }
             } else {
-//# Prime numbers for Hammersley sequence
+                //# Prime numbers for Hammersley sequence
                 auto prm = nth_prime(N_dim - 1);
                 for (unsigned itr = 1; itr < N_dim; ++itr) {
                     base.push_back(static_cast<int>(prm[itr - 1]));
                 }
                 seq = np::zeros<fp_t>({ndir, N_dim});
                 for (unsigned it = 0; it < N_dim; ++it) {
-                    // xt::view(seq, xt::all(), it) = hamm(ndir, base[it]);
-                    // 変更点
                     auto tmp = hamm(ndir, base[it]);
                     if (tmp.shape(0) == 1 && tmp.shape(1) == seq.shape(0)) {
                         xt::view(seq, xt::all(), it) = tmp.reshape({seq.shape(0)});
@@ -783,9 +755,9 @@ namespace yukilib {
                     }
                 }
             }
-//# Define t
+            //# Define t
             auto t = np::arange<size_t>(1, N + 1);
-//# Counter
+            //# Counter
             size_t nbit = 0;
             MAXITERATIONS = 1000;  //# default
 
@@ -795,38 +767,35 @@ namespace yukilib {
     }  // namespace internal
 
 
-/**
- * 多変量経験的モード分解をするよ
- * @param arg 分解したいデータ列
- * @param n1 num_directions
- * @param n2 stopping criteria
- * @param n3 stop_vec
- * @return 3Dの行列　
- */
+    /**
+     * 多変量経験的モード分解をするよ
+     * @param arg 分解したいデータ列
+     * @param n1 num_directions
+     * @param n2 stopping criteria
+     * @param n3 stop_vec
+     * @return IMF と 残差の個数の合計値
+     */
     unsigned memd(std::string_view prefix, const xt::xarray<fp_t> &arg, std::optional<unsigned> n1 = std::nullopt,
                   std::optional<EStopCriteria> n2 = std::nullopt,
                   std::optional<std::tuple<fp_t, fp_t, fp_t>> n3 = std::nullopt) {
-        auto [x, seq, t, ndir, N_dim, N, sd, sd2, tol, _nbit, MAXITERATIONS, stop_crit, stp_cnt] = internal::set_value(
-                arg,
-                n1,
-                n2,
-                n3);
+        auto [x, seq, t, ndir, N_dim, N, sd, sd2, tol, _nbit, MAXITERATIONS, stop_crit, stp_cnt]
+                = internal::set_value(arg, n1, n2, n3);
         size_t nbit = _nbit;
         auto r = x;
         unsigned n_imf = 1;
-        std::vector<xt::xarray<fp_t>>
-                q{};
-        q.reserve(10);  //todo 適切な初期容量を決める
+
+        const int mpi_rank = internal::get_mpi_rank();
+        std::future<void> write_future{};
 
         while (!internal::stop_emd(r, seq, ndir, N_dim)) {
-//# current mode
+            //# current mode
             auto m = r;
 
             bool stop_sift{};
             xt::xarray<fp_t> env_mean{};
             size_t counter{};
 
-//# computation of mean and stopping criterion
+            //# computation of mean and stopping criterion
             if (stop_crit == EStopCriteria::Stop) {
                 const auto [a, b] = internal::stop(m, t, sd, sd2, tol, seq, ndir, N, N_dim);
                 stop_sift = a;
@@ -839,8 +808,8 @@ namespace yukilib {
                 counter = c;
             }
 
-//# In case the current mode is so small that machine precision can cause
-//# spurious extrema to appear
+            //# In case the current mode is so small that machine precision can cause
+            //# spurious extrema to appear
             if (xt::amax(xt::abs(m))(0) < (1e-10) * (xt::amax(xt::abs(x)))(0)) {
                 if (!stop_sift) {
                     std::cout << "emd:warning: forced stop of EMD : too small amplitude\n";
@@ -850,12 +819,12 @@ namespace yukilib {
                 break;
             }
 
-//# sifting loop
+            //# sifting loop
             while (!stop_sift && nbit < MAXITERATIONS) {
-//# sifting
+                //# sifting
                 m = m - env_mean;
 
-//# computation of mean and stopping criterion
+                //# computation of mean and stopping criterion
                 if (stop_crit == EStopCriteria::Stop) {
                     const auto [a, b] = internal::stop(m, t, sd, sd2, tol, seq, ndir, N, N_dim);
                     stop_sift = a;
@@ -873,26 +842,23 @@ namespace yukilib {
                     std::cerr << "emd:warning!  forced stop of sifting : too many erations" << '\n';
                 }
             }
-            q.emplace_back(xt::transpose(m));
-
-            internal::write_imf(m, n_imf - 1, prefix);
+            if (mpi_rank == 0) {
+                if (write_future.valid()) {
+                    write_future.wait();  // 2回目以降のループだったら、ここで前回のファイル書き込みを終わらせる
+                }
+                write_future = std::async(std::launch::async, internal::write_imf, xt::xarray<double>(m), n_imf - 1,
+                                          prefix);
+                std::cout << "imf" << n_imf << " found" << std::endl;
+            }
 
             n_imf = n_imf + 1;
             r = r - m;
             nbit = 0;
         }
 
-//# Stores the residue
-        q.emplace_back(xt::transpose(r));
-//    q = xt.asarray(q)
-        // この辺自分オリジナル処理
-        xt::xarray<fp_t> q_ret{};
-        q_ret = q[0].reshape({1, q[0].shape(0), q[0].shape(1)});
-        for (size_t i = 1; i < q.size(); ++i) {
-            q_ret = xt::vstack(xt::xtuple(q_ret, q[i].reshape({1, q[i].shape(0), q[i].shape(1)})));
+        if (mpi_rank == 0) {
+            write_future.wait();
         }
-//#sprintf('Elapsed time: %f\n',toc);
-//        return q_ret;
         return n_imf;
     }
 
@@ -922,4 +888,3 @@ namespace yukilib {
     }
 }  // namespace yukilib
 
-//}  // unnamed namespace

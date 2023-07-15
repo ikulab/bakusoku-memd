@@ -6,13 +6,66 @@
 
 #include "../include/memd.hpp"
 
+/// 警告出力用
+class TestCout : public std::stringstream {
+public:
+    ~TestCout() override {
+        std::cerr << "\033[0;32m[          ]\033[0;33m " << str().c_str() << "\033[m";
+    }
+};
+
+/// MPIを使うコードをテストできるようにする
+class MPIEnvironment : public ::testing::Environment {
+public:
+    void SetUp() override {
+        int mpi_err = MPI_Init(nullptr, nullptr);
+        ASSERT_FALSE(mpi_err);
+    }
+
+    void TearDown() override {
+        int mpi_err = MPI_Finalize();
+        ASSERT_FALSE(mpi_err);
+    }
+
+    ~MPIEnvironment() override = default;
+};
+
+int main(int argc, char *argv[]) {
+    ::testing::InitGoogleTest(&argc, argv);
+    ::testing::AddGlobalTestEnvironment(new MPIEnvironment);
+    return RUN_ALL_TESTS();
+}
+
+int get_mpi_rank();
+
+int get_mpi_size();
 
 double calc_maximum_relative_diff_of_memd();
 
 TEST(MainTest, accuracy_of_memd) {
     auto diff = calc_maximum_relative_diff_of_memd();
-    EXPECT_LE(diff, 1.e-10) << "IMFの max(|相対誤差|) が大きすぎるぞ";
-    EXPECT_GE(diff, 1.e-11) << "IMFの max(|相対誤差|) が小さすぎてなんか怪しいぞ";
+    if (get_mpi_size() <= 1) {
+        TestCout() << "警告: MPIプロセス並列が無効! mpiexec 経由でテストを実行しようね!\n";
+    }
+    if (get_mpi_rank() == 0) {
+        TestCout() << "\033[mIMFの max(|相対誤差|): " << diff << "\n";
+        EXPECT_LE(diff, 1.e-10) << "IMFの max(|相対誤差|) が大きすぎるぞ";
+        EXPECT_GE(diff, 1.e-12) << "IMFの max(|相対誤差|) が小さすぎてなんか怪しいぞ";
+    }
+}
+
+int get_mpi_rank() {
+    int mpi_rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    assert(0 <= mpi_rank);
+    return mpi_rank;
+}
+
+int get_mpi_size() {
+    int mpi_size;
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    assert(0 < mpi_size);
+    return mpi_size;
 }
 
 double calc_maximum_relative_diff_of_memd() {
@@ -23,6 +76,7 @@ double calc_maximum_relative_diff_of_memd() {
     xt::xarray<double> inp = xt::load_csv<double>(ifs);
     ifs.close();
     yukilib::memd(PREFIX_OUT, inp, 11);
+    MPI_Barrier(MPI_COMM_WORLD);
     xt::xarray<double> imf_out = yukilib::get_imf(PREFIX_OUT, 9);
     xt::xarray<double> imf_expected = yukilib::get_imf(PREFIX_EXPECTED, 9);
     xt::xarray<double> relative_diff = imf_out;

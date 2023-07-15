@@ -9,7 +9,7 @@ FROM ubuntu:lunar-20230615 AS builder
 
 RUN sed -i 's@archive.ubuntu.com@ftp.jaist.ac.jp/pub/Linux@g' /etc/apt/sources.list \
     && apt update \
-    && apt install -y g++ ninja-build cmake libopenblas-dev \
+    && apt install -y g++ ninja-build cmake libopenblas-dev libopenmpi-dev \
     && apt clean -y \
     && rm -rf /var/lib/apt/lists/*
 
@@ -31,7 +31,7 @@ RUN cd $dir_workspace/ \
     && mv ./bakusoku-memd-lib/res ../../$dir_release/ \
     && cd / \
     && rm -r $dir_workspace \
-    && apt purge -y libopenblas-dev cmake ninja-build g++ --autoremove
+    && apt purge -y g++ ninja-build cmake libopenblas-dev libopenmpi-dev --autoremove
 
 
 FROM ubuntu:lunar-20230615
@@ -39,7 +39,7 @@ LABEL authors="Yuki"
 
 RUN sed -i 's@archive.ubuntu.com@ftp.jaist.ac.jp/pub/Linux@g' /etc/apt/sources.list \
     && apt update \
-    && apt install libopenblas0-pthread -y \
+    && apt install libopenblas0-pthread openmpi-bin -y \
     && apt clean -y \
     && rm -rf /var/lib/apt/lists/*
 
@@ -47,5 +47,6 @@ ARG dir_release
 
 COPY --from=builder /$dir_release /$dir_release
 WORKDIR /$dir_release
+ENV OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
 
 CMD ["/bin/bash"]

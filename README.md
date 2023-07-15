@@ -10,7 +10,7 @@ Multivariate Empirical Mode Decomposition (MEMD)を 🚅爆速💨 で計算す�
 ## Getting Started
 
 1. `docker-compose run --rm bakusoku-memd`
-2. `./bakusoku-memd ./sampledata/ndarray_173_5_seed0.csv out_imf 32`
+2. `mpiexec -n 2 ./bakusoku-memd ./sampledata/ndarray_173_5_seed0.csv out_imf 32`
 3. MEMDの結果が `./out_imfXXX` に出力される
 
 ## Features
@@ -27,15 +27,19 @@ Multivariate Empirical Mode Decomposition (MEMD)を 🚅爆速💨 で計算す�
 - C++17が使える新しめなコンパイラ
 - CMake 3.16以上
 - OpenBLAS
+- MPI実行環境
 
 ## Usage
 
 - 読み込むデータファイル、imfを書き出すファイルの接頭辞、単位ベクトルの次元数を指定して実行
 
   `./bakusoku-memd ./path/to/sampledata/ndarray_173_5_seed0.csv out_imf 32`
-- 計算精度(pythonのMEMDライブラリを基準とする)を確認するテスト 最大の相対誤差(&lt; 1.0e-10)
+- 計算精度(pythonのMEMDライブラリを基準とする)を確認するテスト (詳しくはテストのソースコードを読んでね)
 
   `./bakusoku-memd-lib-test`
+- MPIでプロセス数を指定して実行する
+
+  `mpiexec -n 2 ./bakusoku-mend...`
 
 ## Installation
 
@@ -47,7 +51,7 @@ Multivariate Empirical Mode Decomposition (MEMD)を 🚅爆速💨 で計算す�
        `wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && bash Miniconda3-latest-Linux-x86_64.sh`
     2. Requirementのツールをconda環境にインストール
         1. `conda config --add channels conda-forge`
-        2. `conda install cxx-compiler cmake openblas`
+        2. `conda install cxx-compiler cmake openblas openmpi`
     3. ビルド
         1. `cd bakusoku-memd && mkdir build && cd ./build`
         2. `cmake -DCMAKE_BUILD_TYPE=Release ..`
