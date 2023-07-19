@@ -47,6 +47,10 @@ TEST(MainTest, accuracy_of_memd) {
     if (get_mpi_size() <= 1) {
         TestCout() << "警告: MPIプロセス並列が無効! mpiexec 経由でテストを実行しようね!\n";
     }
+#pragma omp parallel default(none)
+    if (omp_get_num_threads() <= 1 && omp_get_thread_num() == 0) {
+        TestCout() << "警告: OpenMPスレッド並列が無効! 環境変数 OMP_NUM_THREADS=n を設定して実行しようね!\n";
+    }
     if (get_mpi_rank() == 0) {
         TestCout() << "\033[mIMFの max(|相対誤差|): " << diff << "\n";
         EXPECT_LE(diff, 1.e-10) << "IMFの max(|相対誤差|) が大きすぎるぞ";

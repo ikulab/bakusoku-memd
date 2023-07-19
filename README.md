@@ -10,7 +10,7 @@ Multivariate Empirical Mode Decomposition (MEMD)を 🚅爆速💨 で計算す�
 ## Getting Started
 
 1. `docker-compose run --rm bakusoku-memd`
-2. `mpiexec -n 2 ./bakusoku-memd ./sampledata/ndarray_173_5_seed0.csv out_imf 32`
+2. `OMP_NUM_THREADS=2 mpiexec -n 2 ./bakusoku-memd ./sampledata/ndarray_173_5_seed0.csv out_imf 32`
 3. MEMDの結果が `./out_imfXXX` に出力される
 
 ## Features
@@ -24,7 +24,7 @@ Multivariate Empirical Mode Decomposition (MEMD)を 🚅爆速💨 で計算す�
 
 あるいは
 
-- C++17が使える新しめなコンパイラ
+- OpenMPとC++17が使える新しめなコンパイラ
 - CMake 3.16以上
 - OpenBLAS
 - MPI実行環境
@@ -37,9 +37,9 @@ Multivariate Empirical Mode Decomposition (MEMD)を 🚅爆速💨 で計算す�
 - 計算精度(pythonのMEMDライブラリを基準とする)を確認するテスト (詳しくはテストのソースコードを読んでね)
 
   `./bakusoku-memd-lib-test`
-- MPIでプロセス数を指定して実行する
+- OpenMPのスレッド数、MPIのプロセス数を指定して実行する
 
-  `mpiexec -n 2 ./bakusoku-mend...`
+  `OMP_NUM_THREADS=4 mpiexec -n 2 ./bakusoku-memd…`
 
 ## Installation
 

@@ -2,6 +2,16 @@
 #include "memd.hpp"
 #include <xtensor/xnpy.hpp>
 
+void print_parallel_info_rank0() {
+    if (yukilib::internal::get_mpi_rank() == 0) {
+#pragma omp parallel default(none) shared(std::cout)
+        if (omp_get_thread_num() == 0) {
+            std::cout << "Parallel execution info:\n\tMPI_Comm_size = " << yukilib::internal::get_mpi_size()
+                      << "\n\tomp_get_num_threads = "
+                      << omp_get_num_threads() << std::endl;
+        }
+    }
+}
 
 /// std::filesystem::path の代用
 /// \param path 拡張子を含むファイルパス
@@ -76,6 +86,8 @@ void calc_memd(std::string_view dat_path, std::string_view out_path_prefix, unsi
 
 int main(int argc, char *argv[]) {
     MPI_Init(&argc, &argv);
+    omp_set_max_active_levels(1);  // 多重の omp parallel を禁止する
+    print_parallel_info_rank0();
 
     if (argc != 4) {
         std::cerr << "引数の数が期待通りじゃない!(" << argc << " 個)\n"

@@ -17,6 +17,7 @@
 #include <xtensor/xsort.hpp>
 #include <xtensor-blas/xlinalg.hpp>
 #include <mpi.h>
+#include <omp.h>
 #include "./define.hpp"
 #include "./Spline.hpp"
 
@@ -293,12 +294,11 @@ namespace yukilib {
         // computes the mean of the envelopes and the mode amplitude estimate
         std::tuple<np::xarray<fp_t>, np::xarray<fp_t>, np::xarray<fp_t>, np::xarray<fp_t>>
         envelope_mean(const np::xarray<fp_t> &m, const np::xarray<size_t> &t, const np::xarray<fp_t> &seq,
-                      const size_t ndir,
-                      size_t N, size_t N_dim) {
+                      const size_t ndir, const size_t N, const size_t N_dim) {
 
             const auto mpi_size = static_cast<size_t>(get_mpi_size());
             const auto mpi_rank = static_cast<size_t>(get_mpi_rank());
-            const auto mpi_window = ceil(ndir, mpi_size);
+            const auto mpi_window = static_cast<unsigned>(ceil(ndir, mpi_size));
 
             constexpr size_t NBSYM = 2;
             size_t count = 0;
@@ -310,102 +310,99 @@ namespace yukilib {
             std::vector<fp_t> nzm(mpi_window * mpi_size);
 
 
-            np::xarray<fp_t> dir_vec = np::zeros<fp_t>({N_dim, static_cast<size_t>(1)});
-            for (unsigned i = 0; i < mpi_window; ++i) {
-                const size_t it = mpi_window * mpi_rank + i;
-                if (ndir <= it) {
-                    break;
-                }
-                if (N_dim != 3) {     // Multivariate signal (for N_dim ~=3) with hammersley sequence
-                    // # Linear normalisation of hammersley sequence in the range of -1.00 - 1.00
-                    np::xarray<fp_t> b = 2.0 * xt::view(seq, it, xt::all()) - 1.0;
+#pragma omp parallel default(none) shared(m, t, seq, ndir, N, N_dim, mpi_size, mpi_rank, mpi_window, NBSYM, count, env_mean, amp, nem, nzm)
+            {
+                np::xarray<fp_t> dir_vec = np::zeros<fp_t>({N_dim, static_cast<size_t>(1)});
 
-                    // # Find angles corresponding to the normalised sequence
-                    np::xarray<fp_t> tht = np::transpose(
-                            np::atan2(np::sqrt(np::flip(np::cumsum(xt::square(xt::view(b, xt::range(_, 0, -1)))), 0)),
-                                      xt::view(b, xt::range(_, N_dim - 1))));
+                // ompのreductionが使えない変数はスレッドローカルな変数を用意して対応
+                np::xarray<fp_t> env_mean_tl = np::zeros<fp_t>({t.shape(0), N_dim});
+                np::xarray<fp_t> amp_tl = np::zeros<fp_t>({t.shape(0)});
+#pragma omp for reduction(+:count)
+                for (unsigned i = 0; i < mpi_window; ++i) {
+                    const size_t it = mpi_window * mpi_rank + i;
+                    if (ndir <= it) {
+                        continue;  // breakだとomp parallel for で危険かも?(調べるべき)
+                    }
+                    if (N_dim != 3) {     // Multivariate signal (for N_dim ~=3) with hammersley sequence
+                        // # Linear normalisation of hammersley sequence in the range of -1.00 - 1.00
+                        np::xarray<fp_t> b = 2.0 * xt::view(seq, it, xt::all()) - 1.0;
 
-                    // # Find coordinates of unit direction vectors on n-sphere
-                    xt::view(dir_vec, xt::all(), 0) = np::cumprod(
-                            np::concatenate(xt::xtuple(np::xarray<fp_t>({1.0}), np::sin(tht))));
-                    xt::view(dir_vec, xt::range(_, N_dim - 1), 0) =
-                            np::cos(tht) * xt::view(dir_vec, xt::range(_, N_dim - 1), 0);
+                        // # Find angles corresponding to the normalised sequence
+                        np::xarray<fp_t> tht = np::transpose(
+                                np::atan2(
+                                        np::sqrt(np::flip(np::cumsum(xt::square(xt::view(b, xt::range(_, 0, -1)))), 0)),
+                                        xt::view(b, xt::range(_, N_dim - 1))));
 
-                } else { // # Trivariate signal with hammersley sequence
-                    // # Linear normalisation of hammersley sequence in the range of -1.0 - 1.0
-                    fp_t tt = 2.0 * seq(it, 0) - 1.0;
-                    if (tt > 1) {
-                        tt = 1;
-                    } else if (tt < -1) {
-                        tt = -1;
+                        // # Find coordinates of unit direction vectors on n-sphere
+                        xt::view(dir_vec, xt::all(), 0) = np::cumprod(
+                                np::concatenate(xt::xtuple(np::xarray<fp_t>({1.0}), np::sin(tht))));
+                        xt::view(dir_vec, xt::range(_, N_dim - 1), 0) =
+                                np::cos(tht) * xt::view(dir_vec, xt::range(_, N_dim - 1), 0);
+
+                    } else { // # Trivariate signal with hammersley sequence
+                        // # Linear normalisation of hammersley sequence in the range of -1.0 - 1.0
+                        fp_t tt = 2.0 * seq(it, 0) - 1.0;
+                        if (tt > 1) {
+                            tt = 1;
+                        } else if (tt < -1) {
+                            tt = -1;
+                        }
+
+                        // # Normalize angle from 0 - 2*pi
+                        fp_t phirad = seq(it, 1) * 2.0 * numbers::pi_v<fp_t>;
+                        fp_t st = std::sqrt(1.0 - tt * tt);
+
+                        xt::view(dir_vec, 0, 0) = st * std::cos(phirad);
+                        xt::view(dir_vec, 1, 0) = st * std::sin(phirad);
+                        xt::view(dir_vec, 2, 0) = tt;
                     }
 
-                    // # Normalize angle from 0 - 2*pi
-                    fp_t phirad = seq(it, 1) * 2.0 * numbers::pi_v<fp_t>;
-                    fp_t st = std::sqrt(1.0 - tt * tt);
+                    // # Projection of input signal on nth (out of total ndir) direction vectors
+                    np::xarray<fp_t> y = xt::linalg::dot(m, dir_vec);
 
-                    xt::view(dir_vec, 0, 0) = st * std::cos(phirad);
-                    xt::view(dir_vec, 1, 0) = st * std::sin(phirad);
-                    xt::view(dir_vec, 2, 0) = tt;
+                    // # Calculates the extrema of the projected signal
+                    const auto [indmin, indmax] = local_peaks(y);
+
+                    nem[it] = static_cast<fp_t>(indmin.shape(0) + indmax.shape(0));
+                    np::xarray<size_t> indzer = zero_crossings(y);
+                    nzm[it] = static_cast<fp_t>(indzer.shape(0));
+
+                    const auto [may_null_results, mode] = boundary_conditions(indmin, indmax, t, y, m, NBSYM);
+
+                    // # Calculate multidimensional envelopes using spline interpolation
+                    // # Only done if number of extrema of the projected signal exceed 3
+                    if (mode) {
+                        assert(may_null_results.has_value() && "mode == true ");
+                        const auto [tmin, tmax, zmin, zmax] = *may_null_results;
+                        const auto env_min = CubicSpline(tmin, zmin, t);
+                        const auto env_max = CubicSpline(tmax, zmax, t);
+
+                        amp_tl = amp_tl + np::sqrt(np::sum(np::square(env_max - env_min), 1)) / 2;
+                        env_mean_tl = env_mean_tl + (env_max + env_min) / 2;
+                    } else {   // # if the projected signal has inadequate extrema
+                        count = count + 1;  // これはreductionが効いてる
+                    }
                 }
-
-                // # Projection of input signal on nth (out of total ndir) direction vectors
-                np::xarray<fp_t> y = xt::linalg::dot(m, dir_vec);
-
-                // # Calculates the extrema of the projected signal
-                const auto [indmin, indmax] = local_peaks(y);
-
-                nem[it] = static_cast<fp_t>(indmin.shape(0) + indmax.shape(0));
-                np::xarray<size_t> indzer = zero_crossings(y);
-                nzm[it] = static_cast<fp_t>(indzer.shape(0));
-
-                const auto [may_null_results, mode] = boundary_conditions(indmin, indmax, t, y, m, NBSYM);
-
-                // # Calculate multidimensional envelopes using spline interpolation
-                // # Only done if number of extrema of the projected signal exceed 3
-                if (mode) {
-                    assert(may_null_results.has_value() && "mode == true ");
-                    const auto [tmin, tmax, zmin, zmax] = *may_null_results;
-                    const auto env_min = CubicSpline(tmin, zmin, t);
-                    const auto env_max = CubicSpline(tmax, zmax, t);
-                    amp = amp + np::sqrt(np::sum(np::square(env_max - env_min), 1)) / 2;
-
-                    env_mean = env_mean + (env_max + env_min) / 2;
-                } else {   // # if the projected signal has inadequate extrema
-                    count = count + 1;
+#pragma omp critical(crit_avg)
+                {
+                    amp += amp_tl;
+                    env_mean += env_mean_tl;
                 }
             }
 
 
             assert(sizeof(fp_t) == sizeof(double));
-            std::vector<fp_t> env_mean_tmp(env_mean.size() * mpi_size);  // mpi_rank == 0 ? env_mean.size() * mpi_size
-            std::vector<fp_t> amp_tmp(t.shape(0) * mpi_size);  // mpi_rank == 0 ? t.shape(0) * mpi_size
-            MPI_Gather(env_mean.data(), static_cast<int>(env_mean.size()), MPI_DOUBLE, env_mean_tmp.data(),
-                       static_cast<int>(env_mean.size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
-            MPI_Gather(amp.data(), static_cast<int>(amp.size()), MPI_DOUBLE, amp_tmp.data(),
-                       static_cast<int>(amp.size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
-            MPI_Gather(nem.data() + (mpi_window * mpi_rank), static_cast<int>(mpi_window), MPI_DOUBLE, nem.data(),
-                       static_cast<int>(mpi_window), MPI_DOUBLE, 0, MPI_COMM_WORLD);
-            MPI_Gather(nzm.data() + (mpi_window * mpi_rank), static_cast<int>(mpi_window), MPI_DOUBLE, nzm.data(),
-                       static_cast<int>(mpi_window), MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-            if (mpi_rank == 0) {
-                for (unsigned i = 1; i < mpi_size; ++i) {
-                    std::transform(env_mean.begin(), env_mean.end(),
-                                   env_mean_tmp.begin() + (static_cast<ptrdiff_t>(env_mean.size() * i)),
-                                   env_mean.begin(),
-                                   std::plus<>());
-                    std::transform(amp.begin(), amp.end(), amp_tmp.begin() + (static_cast<ptrdiff_t>(amp.size() * i)),
-                                   amp.begin(),
-                                   std::plus<>());
-                }
-            }
+            // MPI_AllgatherにMPI_IN_PLACEを使うとsendcountとsendtypeが無視される
+            MPI_Allreduce(MPI_IN_PLACE, &count, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+            MPI_Allreduce(MPI_IN_PLACE, env_mean.data(), static_cast<int>(env_mean.size()), MPI_DOUBLE, MPI_SUM,
+                          MPI_COMM_WORLD);
+            MPI_Allreduce(MPI_IN_PLACE, amp.data(), static_cast<int>(amp.size()), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+            MPI_Allgather(MPI_IN_PLACE, 000, nullptr, nem.data(), static_cast<int>(mpi_window), MPI_DOUBLE,
+                          MPI_COMM_WORLD);
+            MPI_Allgather(MPI_IN_PLACE, 000, nullptr, nzm.data(), static_cast<int>(mpi_window), MPI_DOUBLE,
+                          MPI_COMM_WORLD);
 
-            MPI_Allreduce(&count, &count, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);  //countを合算して同期
-            MPI_Bcast(env_mean.data(), static_cast<int>(env_mean.size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
-            MPI_Bcast(amp.data(), static_cast<int>(amp.size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
-            MPI_Bcast(nem.data(), static_cast<int>(nem.size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
-            MPI_Bcast(nzm.data(), static_cast<int>(nzm.size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
             nem.resize(ndir);
             nzm.resize(ndir);
             np::xarray<fp_t> nem_ret = xt::adapt(nem);
@@ -863,9 +860,9 @@ namespace yukilib {
     }
 
     /// prefixから始まるimf_num個のファイルからimfを取り出し、[imf_num, channel, step]の形で返す
-/// \param prefix imfを保存したファイルの接頭辞
-/// \param imf_num imfを保存したファイルの数
-/// \return [imf_num, channel, step] の3次元行列
+    /// \param prefix imfを保存したファイルの接頭辞
+    /// \param imf_num imfを保存したファイルの数
+    /// \return [imf_num, channel, step] の3次元行列
     xt::xarray<fp_t> get_imf(std::string_view prefix, unsigned imf_num) {
         xt::xarray<fp_t> q_ret{};
         std::ostringstream sout{};

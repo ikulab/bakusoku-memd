@@ -39,7 +39,7 @@ LABEL authors="Yuki"
 
 RUN sed -i 's@archive.ubuntu.com@ftp.jaist.ac.jp/pub/Linux@g' /etc/apt/sources.list \
     && apt update \
-    && apt install libopenblas0-pthread openmpi-bin -y \
+    && apt install libopenblas0-pthread openmpi-bin libgomp1 -y \
     && apt clean -y \
     && rm -rf /var/lib/apt/lists/*
 

@@ -33,8 +33,11 @@ endif ()
 
 find_package(OpenBLAS REQUIRED)
 find_package(MPI REQUIRED)
+find_package(OpenMP REQUIRED)
 target_link_libraries(bakusoku-memd-lib INTERFACE ${OpenBLAS_LIBRARIES} ${MPI_LIBRARIES})
-target_include_directories(bakusoku-memd-lib INTERFACE ${MPI_INCLUDE_PATH})
+target_include_directories(bakusoku-memd-lib SYSTEM INTERFACE ${MPI_INCLUDE_PATH})
+target_compile_options(bakusoku-memd-lib INTERFACE ${OpenMP_CXX_FLAGS})
+target_link_options(bakusoku-memd-lib INTERFACE ${OpenMP_CXX_FLAGS})
 
 
 enable_testing()

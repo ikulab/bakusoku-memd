@@ -5,7 +5,7 @@
 
     例 自分でビルドして変な場所に配置したOpenBLASをcmakeに見つけてもらえるようにする場合
     function(set_local_properties)
-        set(OpenBLAS_DIR /home/Watakushi/mylib/OpenBLAS/lib/cmake/openblas
+        set(OpenBLAS_DIR /home/Watakushi/mylib/OpenBLAS/lib/cmake/openblas PARENT_SCOPE)
     endfunction(set_local_properties)
 ]===]
 
@@ -17,6 +17,16 @@ function(set_local_properties)
                     OUTPUT_VARIABLE OPENBLAS_BREW_PREFIX
                     OUTPUT_STRIP_TRAILING_WHITESPACE)
             set(OpenBLAS_DIR ${OPENBLAS_BREW_PREFIX}/lib/cmake/openblas PARENT_SCOPE)
+
+            # OpenMPのインストールチェック
+            execute_process(COMMAND ${BREW_BIN} --prefix libomp
+                    OUTPUT_VARIABLE OpenMP_HOME
+                    OUTPUT_STRIP_TRAILING_WHITESPACE)
+            set(OpenMP_C_LIB_NAMES "omp")
+            set(OpenMP_CXX_LIB_NAMES "omp")
+            set(OpenMP_omp_LIBRARY "${OpenMP_HOME}/lib/")
+            set(OpenMP_CXX_FLAGS -Xpreprocessor -fopenmp -Wno-unused-command-line-argument -I${OpenMP_HOME}/include -lomp -L${OpenMP_omp_LIBRARY} CACHE STRING "" FORCE)
+            set(OpenMP_C_FLAGS "-fopenmp -Wno-unused-command-line-argument -I${OpenMP_HOME}/include -lomp -L${OpenMP_omp_LIBRARY}" CACHE STRING "" FORCE)
         endif ()
     elseif (UNIX)
 
